@@ -17,7 +17,7 @@ app.use(express.json());
 
 // Reference API Key and Endpoint
 const API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent';
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:streamGenerateContent';
 
 // Helper to strip markdown block fences and extract raw JSON array
 function cleanJsonText(rawText) {
@@ -46,6 +46,69 @@ function cleanJsonText(rawText) {
   return clean;
 }
 
+// Incremental parser class to extract JSON objects from a stream of a JSON array
+class IncrementalJsonArrayParser {
+  constructor(onMessage) {
+    this.onMessage = onMessage;
+    this.buffer = '';
+    this.depth = 0;
+    this.inString = false;
+    this.escapeNext = false;
+    this.objectStartIdx = -1;
+  }
+
+  write(chunk) {
+    this.buffer += chunk;
+    let i = this.buffer.length - chunk.length;
+
+    while (i < this.buffer.length) {
+      const char = this.buffer[i];
+
+      if (this.escapeNext) {
+        this.escapeNext = false;
+        i++;
+        continue;
+      }
+
+      if (char === '\\') {
+        this.escapeNext = true;
+        i++;
+        continue;
+      }
+
+      if (char === '"') {
+        this.inString = !this.inString;
+        i++;
+        continue;
+      }
+
+      if (!this.inString) {
+        if (char === '{') {
+          if (this.depth === 0) {
+            this.objectStartIdx = i;
+          }
+          this.depth++;
+        } else if (char === '}') {
+          this.depth--;
+          if (this.depth === 0 && this.objectStartIdx !== -1) {
+            const objStr = this.buffer.substring(this.objectStartIdx, i + 1);
+            try {
+              const parsed = JSON.parse(objStr);
+              this.onMessage(parsed);
+            } catch (err) {
+              // Ignore invalid JSON parsing chunks
+            }
+            this.buffer = this.buffer.substring(i + 1);
+            i = -1;
+            this.objectStartIdx = -1;
+          }
+        }
+      }
+      i++;
+    }
+  }
+}
+
 app.post('/api/generate', async (req, res) => {
   const { text } = req.body;
   if (!text) {
@@ -69,11 +132,10 @@ app.post('/api/generate', async (req, res) => {
     const fullPrompt = `${systemInstruction}\n\nUser request to act upon:\n"${text}"`;
 
     // 3. Request Gemini API
-    const response = await fetch(GEMINI_API_URL, {
+    const response = await fetch(`${GEMINI_API_URL}?key=${API_KEY}`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'X-goog-api-key': API_KEY
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify({
         contents: [
@@ -93,35 +155,45 @@ app.post('/api/generate', async (req, res) => {
       throw new Error(`Gemini API Error (status ${response.status}): ${errText}`);
     }
 
-    const data = await response.json();
-    const rawResultText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    // Set headers for HTTP chunked stream response
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Transfer-Encoding', 'chunked');
 
-    if (!rawResultText) {
-      throw new Error('No content returned from Gemini Flash API.');
+    // Setup streaming parser pipeline
+    const a2uiParser = new IncrementalJsonArrayParser((parsedMessage) => {
+      res.write(JSON.stringify(parsedMessage) + '\n');
+    });
+
+    const geminiParser = new IncrementalJsonArrayParser((chunkObj) => {
+      const chunkText = chunkObj.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      if (chunkText) {
+        a2uiParser.write(chunkText);
+      }
+    });
+
+    // Read the stream
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let done = false;
+
+    while (!done) {
+      const { value, done: readerDone } = await reader.read();
+      done = readerDone;
+      if (value) {
+        const textChunk = decoder.decode(value, { stream: true });
+        geminiParser.write(textChunk);
+      }
     }
 
-    console.log('[FoodAI Server] Gemini response received. Cleaning output...');
-    const cleanedJsonText = cleanJsonText(rawResultText);
-
-    // Validate if it is valid JSON
-    let parsedJson;
-    try {
-      parsedJson = JSON.parse(cleanedJsonText);
-    } catch (parseErr) {
-      console.error('[FoodAI Server] JSON Parsing failed. Raw response text was:', rawResultText);
-      return res.status(500).json({
-        error: 'Generated output was not valid A2UI JSON.',
-        details: parseErr.message,
-        rawOutput: rawResultText
-      });
-    }
-
-    console.log('[FoodAI Server] Successfully parsed and returning A2UI JSON.');
-    return res.json(parsedJson);
+    res.end();
 
   } catch (error) {
     console.error('[FoodAI Server] Error generating A2UI JSON:', error);
-    return res.status(500).json({ error: 'Server error generating UI.', details: error.message });
+    if (!res.headersSent) {
+      return res.status(500).json({ error: 'Server error generating UI.', details: error.message });
+    } else {
+      res.end();
+    }
   }
 });
 
