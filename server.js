@@ -89,14 +89,16 @@ class IncrementalJsonArrayParser {
           if (this.depth === 0) {
             this.objectStartIdx = i;
             this.isUpdateComponents = false;
-          } else if (this.depth === 1 && this.isUpdateComponents) {
+          } else if (this.depth === 2 && this.isUpdateComponents) {
+            // Nested component inside components array starts at depth 2 (3rd curly brace)
             this.componentStartIdx = i;
           }
           this.depth++;
         } else if (char === '}') {
           this.depth--;
           
-          if (this.depth === 1 && this.isUpdateComponents && this.componentStartIdx !== -1) {
+          if (this.depth === 2 && this.isUpdateComponents && this.componentStartIdx !== -1) {
+            // End of component (depth returns to 2)
             const compStr = this.buffer.substring(this.componentStartIdx, i + 1);
             try {
               const component = JSON.parse(compStr);
