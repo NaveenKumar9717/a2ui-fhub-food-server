@@ -55,6 +55,8 @@ class IncrementalJsonArrayParser {
     this.inString = false;
     this.escapeNext = false;
     this.objectStartIdx = -1;
+    this.componentStartIdx = -1;
+    this.isUpdateComponents = false;
   }
 
   write(chunk) {
@@ -86,21 +88,53 @@ class IncrementalJsonArrayParser {
         if (char === '{') {
           if (this.depth === 0) {
             this.objectStartIdx = i;
+            this.isUpdateComponents = false;
+          } else if (this.depth === 1 && this.isUpdateComponents) {
+            this.componentStartIdx = i;
           }
           this.depth++;
         } else if (char === '}') {
           this.depth--;
-          if (this.depth === 0 && this.objectStartIdx !== -1) {
+          
+          if (this.depth === 1 && this.isUpdateComponents && this.componentStartIdx !== -1) {
+            const compStr = this.buffer.substring(this.componentStartIdx, i + 1);
+            try {
+              const component = JSON.parse(compStr);
+              // Wrap this individual component and emit immediately
+              this.onMessage({
+                version: 'v0.9',
+                updateComponents: {
+                  surfaceId: 'main-surface',
+                  components: [component]
+                }
+              });
+            } catch (err) {
+              // Ignore partial JSON parse errors
+            }
+            // Replace parsed component in buffer with a tiny placeholder
+            const before = this.buffer.substring(0, this.componentStartIdx);
+            const after = this.buffer.substring(i + 1);
+            this.buffer = before + ' {} ' + after;
+            i = this.componentStartIdx + 3; // Jump past placeholder
+            this.componentStartIdx = -1;
+          } else if (this.depth === 0 && this.objectStartIdx !== -1) {
             const objStr = this.buffer.substring(this.objectStartIdx, i + 1);
             try {
               const parsed = JSON.parse(objStr);
-              this.onMessage(parsed);
+              // Emit normal messages (like createSurface, updateDataModel)
+              if (!parsed.updateComponents) {
+                this.onMessage(parsed);
+              }
             } catch (err) {
               // Ignore invalid JSON parsing chunks
             }
             this.buffer = this.buffer.substring(i + 1);
             i = -1;
             this.objectStartIdx = -1;
+          }
+        } else if (this.depth === 1 && !this.isUpdateComponents) {
+          if (this.buffer.includes('"updateComponents"')) {
+            this.isUpdateComponents = true;
           }
         }
       }
