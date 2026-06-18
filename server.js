@@ -17,7 +17,7 @@ app.use(express.json());
 
 // Reference API Key and Endpoint
 const API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:streamGenerateContent';
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:streamGenerateContent';
 
 // Helper to strip markdown block fences and extract raw JSON array
 function cleanJsonText(rawText) {
