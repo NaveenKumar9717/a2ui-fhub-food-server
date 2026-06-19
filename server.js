@@ -191,13 +191,15 @@ app.post('/api/generate', async (req, res) => {
       throw new Error(`Gemini API Error (status ${response.status}): ${errText}`);
     }
 
-    // Set headers for HTTP chunked stream response
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Transfer-Encoding', 'chunked');
+    // Set headers for Server-Sent Events (SSE) streaming response
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
 
     // Setup streaming parser pipeline
     const a2uiParser = new IncrementalJsonArrayParser((parsedMessage) => {
-      res.write(JSON.stringify(parsedMessage) + '\n');
+      res.write(`data: ${JSON.stringify(parsedMessage)}\n\n`);
     });
 
     const geminiParser = new IncrementalJsonArrayParser((chunkObj) => {
