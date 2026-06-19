@@ -188,8 +188,11 @@ app.post('/api/generate', async (req, res) => {
 
     if (!response.ok) {
       const errText = await response.text();
+      console.error(`[FoodAI Server] Gemini API Error (status ${response.status}):`, errText);
       throw new Error(`Gemini API Error (status ${response.status}): ${errText}`);
     }
+
+    console.log('[FoodAI Server] Gemini response OK. Setting up SSE headers.');
 
     // Set headers for Server-Sent Events (SSE) streaming response
     res.setHeader('Content-Type', 'text/event-stream');
@@ -199,11 +202,13 @@ app.post('/api/generate', async (req, res) => {
 
     // Setup streaming parser pipeline
     const a2uiParser = new IncrementalJsonArrayParser((parsedMessage) => {
+      console.log('[FoodAI Server] [A2UI SSE Out] Emitting message:', JSON.stringify(parsedMessage));
       res.write(`data: ${JSON.stringify(parsedMessage)}\n\n`);
     });
 
     const geminiParser = new IncrementalJsonArrayParser((chunkObj) => {
       const chunkText = chunkObj.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      console.log('[FoodAI Server] [Gemini Part Parser] Parsed chunk text:', JSON.stringify(chunkText));
       if (chunkText) {
         a2uiParser.write(chunkText);
       }
@@ -213,16 +218,22 @@ app.post('/api/generate', async (req, res) => {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let done = false;
+    let chunkCount = 0;
+
+    console.log('[FoodAI Server] Starting Gemini response stream reader loop');
 
     while (!done) {
       const { value, done: readerDone } = await reader.read();
       done = readerDone;
       if (value) {
+        chunkCount++;
         const textChunk = decoder.decode(value, { stream: true });
+        console.log(`[FoodAI Server] [Stream Reader] Read raw body chunk #${chunkCount} (size: ${textChunk.length} bytes)`);
         geminiParser.write(textChunk);
       }
     }
 
+    console.log('[FoodAI Server] Finished reading stream. Closing client connection.');
     res.end();
 
   } catch (error) {
